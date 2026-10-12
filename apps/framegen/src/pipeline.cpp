@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 
 namespace {
 
@@ -60,7 +61,8 @@ Pipeline::Pipeline(ID3D11Device* device, ID3D11DeviceContext* context, const std
 
 ComPtr<ID3D11ComputeShader> Pipeline::Compile(const std::wstring& path, const char* entry) {
     std::string define = "PASS_" + std::string(entry);
-    std::transform(define.begin(), define.end(), define.begin(), ::toupper);
+    std::transform(define.begin(), define.end(), define.begin(),
+                   [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
     const D3D_SHADER_MACRO macros[] = {{define.c_str(), "1"}, {nullptr, nullptr}};
 
     ComPtr<ID3DBlob> code, errors;
