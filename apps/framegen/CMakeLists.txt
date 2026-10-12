@@ -24,7 +24,10 @@ else()
   target_link_options(framegen PRIVATE -municode -static)
 endif()
 
-# Shaders are compiled at startup, so ship the source next to the executable.
+# Shaders are compiled at startup, so ship the source next to the executable,
+# along with the starter profile file.
 add_custom_command(TARGET framegen POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          ${CMAKE_CURRENT_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:framegen>/shaders)
+          ${CMAKE_CURRENT_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:framegen>/shaders
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/profiles.ini $<TARGET_FILE_DIR:framegen>/profiles.ini)

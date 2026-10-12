@@ -132,8 +132,9 @@ trade every interpolation-based frame generator makes.
 
 ## Tuning per game
 
-Settings that matter most per game, exposed as command-line options now and
-as saved profiles later:
+framegen is universal: the `[default]` settings in `profiles.ini` apply to
+any game. A section named after a game's executable overrides them for that
+game, and command-line options override both. These settings matter most:
 
 - `--multiplier`: 2× for 30–45 fps sources, 3× or 4× only when the base frame
   rate is stable.
@@ -152,7 +153,6 @@ as saved profiles later:
 2. WGC capture backend.
 3. Temporal candidate, confidence-weighted vector smoothing, and scene-cut
    detection that skips synthesis across hard cuts.
-4. Per-game profiles keyed by executable name.
-5. Evaluate integrating AMD FidelityFX FSR 3 frame interpolation (MIT
+4. Evaluate integrating AMD FidelityFX FSR 3 frame interpolation (MIT
    licensed) as an alternative synthesis backend, and FSR 1 (MIT) for
    spatial upscaling, with attribution under `licenses/`.

@@ -8,18 +8,43 @@
 #include <algorithm>
 #include <cwchar>
 #include <cwctype>
+#include <iterator>
+#include <utility>
+#include <vector>
 
 namespace {
 
 struct Options {
     std::wstring windowTitle;  // substring; empty = foreground window after a countdown
+    std::wstring shaderPath;
+    std::wstring profilePath;
+    // Tuning, from the profile file then the command line.
     int multiplier = 2;
     bool scale = false;
     bool vsync = false;
     double maxIntervalMs = 100.0;
-    std::wstring shaderPath;
     PipelineSettings pipeline;
 };
+
+// Tuning settings shared by profiles.ini keys and --<key> options.
+// Flags (scale, vsync) take "1"/"0" in profiles and no value on the command line.
+bool IsFlag(const std::wstring& key) { return key == L"scale" || key == L"vsync"; }
+
+bool ApplySetting(Options& o, const std::wstring& key, const wchar_t* value) {
+    if (key == L"multiplier") o.multiplier = std::clamp(_wtoi(value), 2, 4);
+    else if (key == L"scale") o.scale = _wtoi(value) != 0;
+    else if (key == L"vsync") o.vsync = _wtoi(value) != 0;
+    else if (key == L"sharpen") o.pipeline.sharpness = std::clamp(static_cast<float>(_wtof(value)), 0.f, 1.f);
+    else if (key == L"search") o.pipeline.searchRadius = std::clamp(_wtoi(value), 1, 16);
+    else if (key == L"occlusion")
+        o.pipeline.occlusionThreshold = std::clamp(static_cast<float>(_wtof(value)), 0.f, 1.f);
+    else if (key == L"max-interval-ms") o.maxIntervalMs = std::max(1.0, _wtof(value));
+    else return false;
+    return true;
+}
+
+constexpr const wchar_t* kSettingKeys[] = {L"multiplier", L"scale",     L"vsync",          L"sharpen",
+                                           L"search",     L"occlusion", L"max-interval-ms"};
 
 void PrintUsage() {
     std::wprintf(
@@ -33,35 +58,71 @@ void PrintUsage() {
         L"  --occlusion <0..1>     disagreement that stops blending (default 0.12)\n"
         L"  --max-interval-ms <n>  no generation when source frames are further apart (default 100)\n"
         L"  --vsync                align presents to the display refresh\n"
+        L"  --profiles <path>      per-game profiles (default: profiles.ini next to the exe)\n"
         L"  --shaders <path>       shader file (default: shaders\\framegen.hlsl next to the exe)\n"
+        L"Settings resolve as: built-in defaults, then [default] and [<game>.exe] in the\n"
+        L"profile file, then command-line options.\n"
         L"hotkeys: Ctrl+Alt+F toggles generation, Ctrl+Alt+Q quits\n");
 }
 
-bool ParseOptions(int argc, wchar_t** argv, Options& o) {
+std::wstring ExeDir() {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir = exe;
+    dir.resize(dir.find_last_of(L"\\/") + 1);
+    return dir;
+}
+
+using CliSettings = std::vector<std::pair<std::wstring, std::wstring>>;
+
+// Paths and the target are read now; tuning is kept aside so it can be
+// applied after the target's profile.
+bool ParseOptions(int argc, wchar_t** argv, Options& o, CliSettings& tuning) {
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
         auto next = [&]() -> const wchar_t* {
             if (i + 1 >= argc) throw std::runtime_error("missing value after an option");
             return argv[++i];
         };
-        if (a == L"--window") o.windowTitle = next();
-        else if (a == L"--multiplier") o.multiplier = std::clamp(_wtoi(next()), 2, 4);
-        else if (a == L"--scale") o.scale = true;
-        else if (a == L"--sharpen") o.pipeline.sharpness = std::clamp(static_cast<float>(_wtof(next())), 0.f, 1.f);
-        else if (a == L"--search") o.pipeline.searchRadius = std::clamp(_wtoi(next()), 1, 16);
-        else if (a == L"--occlusion")
-            o.pipeline.occlusionThreshold = std::clamp(static_cast<float>(_wtof(next())), 0.f, 1.f);
-        else if (a == L"--max-interval-ms") o.maxIntervalMs = std::max(1.0, _wtof(next()));
-        else if (a == L"--vsync") o.vsync = true;
-        else if (a == L"--shaders") o.shaderPath = next();
+        if (a.rfind(L"--", 0) != 0) return false;
+        std::wstring key = a.substr(2);
+        if (key == L"window") o.windowTitle = next();
+        else if (key == L"shaders") o.shaderPath = next();
+        else if (key == L"profiles") o.profilePath = next();
+        else if (IsFlag(key)) tuning.emplace_back(key, L"1");
+        else if (std::find(std::begin(kSettingKeys), std::end(kSettingKeys), key) != std::end(kSettingKeys))
+            tuning.emplace_back(key, next());
         else return false;
     }
-    if (o.shaderPath.empty()) {
-        wchar_t exe[MAX_PATH];
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        std::wstring dir = exe;
-        dir.resize(dir.find_last_of(L"\\/") + 1);
-        o.shaderPath = dir + L"shaders\\framegen.hlsl";
+    if (o.shaderPath.empty()) o.shaderPath = ExeDir() + L"shaders\\framegen.hlsl";
+    if (o.profilePath.empty()) o.profilePath = ExeDir() + L"profiles.ini";
+    return true;
+}
+
+std::wstring ProcessExeName(HWND hwnd) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return {};
+    wchar_t path[MAX_PATH];
+    DWORD size = MAX_PATH;
+    std::wstring name;
+    if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+        name.assign(path, size);
+        name = name.substr(name.find_last_of(L"\\/") + 1);
+    }
+    CloseHandle(process);
+    return name;
+}
+
+// Applies [section] of the profile file. Returns true when the section exists.
+bool ApplyProfileSection(Options& o, const std::wstring& section) {
+    wchar_t probe[2];
+    if (GetPrivateProfileSectionW(section.c_str(), probe, 2, o.profilePath.c_str()) == 0) return false;
+    for (const wchar_t* key : kSettingKeys) {
+        wchar_t value[64];
+        if (GetPrivateProfileStringW(section.c_str(), key, L"", value, 64, o.profilePath.c_str()) > 0)
+            ApplySetting(o, key, value);
     }
     return true;
 }
@@ -158,12 +219,21 @@ LONGLONG SecondsToQpc(double s) {
 
 enum Hotkey { kToggle = 1, kQuit = 2 };
 
-int Run(const Options& opt) {
+int Run(Options opt, const CliSettings& cli) {
     HWND target = FindTarget(opt.windowTitle);
     if (!target) throw std::runtime_error("target window not found");
     wchar_t title[256];
     GetWindowTextW(target, title, 256);
-    std::wprintf(L"target: \"%ls\"\n", title);
+    const std::wstring exe = ProcessExeName(target);
+    std::wprintf(L"target: \"%ls\" (%ls)\n", title, exe.empty() ? L"unknown process" : exe.c_str());
+
+    ApplyProfileSection(opt, L"default");
+    if (!exe.empty() && ApplyProfileSection(opt, Lower(exe)))
+        std::wprintf(L"profile: [%ls] from %ls\n", Lower(exe).c_str(), opt.profilePath.c_str());
+    for (const auto& [key, value] : cli) ApplySetting(opt, key, value.c_str());
+    std::wprintf(L"settings: multiplier %d, search %d, occlusion %.2f, sharpen %.2f, scale %ls, vsync %ls\n",
+                 opt.multiplier, opt.pipeline.searchRadius, opt.pipeline.occlusionThreshold,
+                 opt.pipeline.sharpness, opt.scale ? L"on" : L"off", opt.vsync ? L"on" : L"off");
 
     DdaCapture capture(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST));
     Pipeline pipeline(capture.Device(), capture.Context(), opt.shaderPath);
@@ -264,12 +334,13 @@ int Run(const Options& opt) {
 int wmain(int argc, wchar_t** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     Options opt;
+    CliSettings cli;
     try {
-        if (!ParseOptions(argc, argv, opt)) {
+        if (!ParseOptions(argc, argv, opt, cli)) {
             PrintUsage();
             return 2;
         }
-        return Run(opt);
+        return Run(opt, cli);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "framegen: %s\n", e.what());
         return 1;

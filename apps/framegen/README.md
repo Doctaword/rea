@@ -51,3 +51,18 @@ in the foreground. It prints source and output frame rates once a second.
 | `--vsync`               | align presents to display refresh                     |
 
 Hotkeys: Ctrl+Alt+F toggles generation, Ctrl+Alt+Q quits.
+
+## Per-game profiles
+
+framegen works on any game with the `[default]` settings. To tune a game, add
+a section named after its executable to `profiles.ini` next to `framegen.exe`:
+
+```ini
+[eldenring.exe]
+search=8
+occlusion=0.10
+```
+
+framegen detects the target's executable and prints which profile it applied.
+Command-line options override the profile. See [profiles.ini](profiles.ini)
+for every key.
